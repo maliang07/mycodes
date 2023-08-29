@@ -28,9 +28,6 @@ def train_epoch(train_loader, model, criterion, optimizer, usingfp16=False):
     for i, (token, mask, label) in enumerate(train_loader1):
         optimizer.zero_grad()
         label = label.to(device)
-        with torch.no_grad():
-            index = fe_selector(token, label)
-            token = token[:, index, :]
         final_score = model(token, mask)
         loss_com = criterion(final_score, label)
         loss_com.backward()
@@ -49,9 +46,6 @@ def valid_epoch(valid_loader, model, criterion):
     for i, (token, mask, label) in enumerate(valid_loader):
         label = label.to(device)
         with torch.no_grad():
-            index = fe_selector(token, label)
-            token = token[:, index, :]
-
             final_score = model(token, mask)
             loss_com = criterion(final_score, label)
             ALL_PREDS.append(final_score.sigmoid().sum(1).detach().round())
