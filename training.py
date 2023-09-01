@@ -20,6 +20,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 from models.VIT import *
 from models.SwinTransformer import *
 fe_selector = FESelector()
+
 def train_epoch(train_loader, model, criterion, optimizer, usingfp16=False):
     model.train()
     train_loader1 = tqdm(train_loader)
@@ -106,6 +107,10 @@ class Collate:
         max_l = max(token_l)
         out = torch.zeros(b, max_l, features)
         mask = torch.zeros(b, max_l, features)
+        for i in range(b):
+            a = token[i]
+            out[i,:a.shape[0],:] = a
+            mask[i,:a.shape[0],:] = 1
 
         return out, mask, label
 
