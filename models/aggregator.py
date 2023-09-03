@@ -7,6 +7,45 @@ import numpy as np
 from feature_selector import *
 EPSILON = np.finfo(float).eps
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+
+class GRU_AGG(nn.Module):
+    def __init__(self, embeding_l, num_layers, hidden_layer, bidirectional, batch_first):
+        super(GRU_AGG, self).__init__()
+        self.num_layers = num_layers
+        self.hidden_size = hidden_layer
+        self.max_linear = nn.Linear(2048, 2048)
+
+        self.relu = nn.ReLU()
+        self.GRU = nn.GRU(input_size=embeding_l, hidden_size=embeding_l, batch_first=True)
+
+        self._init_weights(self.max_linear)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+    def forward(self, token, mask):
+
+        token = self.max_linear(token)
+        out, h_n = self.GRU(token)
+
+        avg_pool = torch.mean(out * mask, 1)
+        max_pool, _ = torch.max(out * mask, 1)
+
+        cat_fe = torch.cat([avg_pool, max_pool], dim=-1)
+
+        return cat_fe
+
 class LSTM_AGG(nn.Module):
     def __init__(self, embeding_l, num_layers, hidden_layer, bidirectional, batch_first):
         super(LSTM_AGG, self).__init__()
@@ -97,15 +136,88 @@ class MAX_MEAN_CAT_AGG(nn.Module):
         cat_fe = torch.cat([mean_pool, max_pool], dim=-1)
         return cat_fe
 
-
 class GeM(nn.Module):
     def __init__(self, p=3, eps=1e-6):
         super(GeM, self).__init__()
         self.p = nn.Parameter(torch.ones(1) * p)
         self.eps = eps
 
-    def forward(self, token):
-        return self.gem(token, p=self.p, eps=self.eps)
+    def forward(self, token, mask):
+        return self.gem(token, mask, p=self.p, eps=self.eps)
 
-    def gem(self, token, p=3, eps=1e-6):
-        return F.avg_pool2d(token.clamp(min=eps).pow(p), (token.size(-2), token.size(-1))).pow(1. / p)
+    def gem(self, token, mask, p=3, eps=1e-6):
+
+        mean_pool = (torch.sum(token.clamp(min=eps).pow(p)*mask, 1)/torch.sum(mask,1)).pow(1. / p)
+        return mean_pool
+
+
+
+class AttentionMIL(nn.Module):
+    def __init__(self, embeding_l, L, D, K):
+        super(AttentionMIL, self).__init__()
+        self.L = L
+        self.D = D
+        self.K = K
+
+        self.feature_extractor_part2 = nn.Sequential(
+            nn.Linear(embeding_l, self.L),
+            nn.ReLU(),
+        )
+
+        self.attention = nn.Sequential(
+            nn.Linear(self.L, self.D),
+            nn.Tanh(),
+            nn.Linear(self.D, self.K)
+        )
+
+
+    def forward(self, x, mask):
+
+        x = self.feature_extractor_part2(x)  # NxL
+        A = self.attention(x)  # NxK
+        A = torch.transpose(A, 2, 1)  # KxN
+        A = F.softmax(A, dim=1)  # softmax over N
+        M = torch.bmm(A, x)  # KxL
+        Y_prob = M.squeeze(1)
+
+        return Y_prob
+
+
+class RNN_AGG(nn.Module):
+    def __init__(self, embeding_l, num_layers, hidden_layer, bidirectional, batch_first):
+        super(RNN_AGG, self).__init__()
+        self.num_layers = num_layers
+        self.hidden_size = hidden_layer
+        self.max_linear = nn.Linear(2048, 2048)
+
+        self.relu = nn.ReLU()
+        self.rnn = nn.RNN(input_size=embeding_l, hidden_size=hidden_layer, batch_first=True, num_layers=num_layers,
+                          bidirectional=True)
+
+        self._init_weights(self.max_linear)
+        # self._init_weights(self.attention2)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+
+    def forward(self, token, mask):
+
+        token = self.max_linear(token)
+        out, h_n = self.rnn(token)
+
+        avg_pool = torch.mean(out, 1)
+        max_pool, _ = torch.max(out, 1)
+
+        cat_fe = torch.cat([avg_pool, max_pool], dim=-1)
+
+        return cat_fe

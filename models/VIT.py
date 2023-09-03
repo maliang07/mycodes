@@ -273,7 +273,7 @@ class HybridEmbed(nn.Module):
 class VisionTransformer(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
     """
-    def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=2048, depth=12,
                  num_heads=12, mlp_ratio=4., mlp_head=False, drop_rate=0., drop_path_rate=0.,
                  flatten_channels_last=False, hybrid_backbone=None):
         super().__init__()
@@ -323,7 +323,7 @@ class VisionTransformer(nn.Module):
 
     def forward(self, x, attn_mask=None):
         B = x.shape[0]
-        x = self.patch_embed(x)
+        #x = self.patch_embed(x)
 
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)

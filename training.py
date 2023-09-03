@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 
 from models.aggregator import *
-from models.MLP import *
-from models.MyAttentionLstm import *
+from models.MyMlp import *
+from models.attentionLstm import *
 from dataset import Prost_Dataset
 from utils.GradualWarmupScheduler import  *
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -126,6 +126,17 @@ if __name__ == '__main__':
     dataset = 'panda'
     folds = [1, 2, 3, 4, 5]
     filedir='./input/panda/h5'
+    agg_type = 'attention_lstm'
+    embeding_l=2048
+    agg_backbone ={'attention_lstm':LSTM_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=1024, bidirectional=True, batch_first=True),
+                   'GRU_AGG':GRU_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=1024, bidirectional=True, batch_first=True),
+                   'AttentionMIL':AttentionMIL(embeding_l=embeding_l, L=500, D=128, K=1),
+                   'RNN_AGG':RNN_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=1024, bidirectional=True, batch_first=True),
+                   'MAX_AGG':MAX_AGG(),
+                   'MEAN_AGG':MEAN_AGG(),
+                   'MAX_MEAN_CAT_AGG':MAX_MEAN_CAT_AGG(),
+                   'GeM':GeM(),
+                   'vit': VisionTransformer(img_size=224, embed_dim=768, depth=8, num_heads=8, mlp_ratio=3, hybrid_backbone=backbone, **kwargs)}
 
     my_collate_fn = Collate()
 
@@ -152,12 +163,14 @@ if __name__ == '__main__':
                 num_workers=8, pin_memory=False, sampler=train_sampler, drop_last=False)
 
         fe_extractor = nn.Identity()
-        fe_aggregator = LSTM_AGG(embeding_l=2048, num_layers =2, hidden_layer=1024, bidirectional=True, batch_first=True)
+        fe_aggregator = agg_backbone[agg_type]#LSTM_AGG(embeding_l=2048, num_layers =2, hidden_layer=1024, bidirectional=True, batch_first=True)
         #fe_aggregator = vit_base_efficientnet_b3(pretrained=True)
         #fe_aggregator = swin_s3_small_224(pretrained=True)
-        mlp = MyMlp(in_features=2048*2, hidden_features=2048, out_features=5)
+        if agg_type in ['GRU_AGG', 'MAX_MEAN_CAT_AGG', 'attention_lstm']:
+            embeding_l = embeding_l*2
+        mlp = MyMlp(in_features=embeding_l, hidden_features=2048, out_features=5)
 
-        model = MyAttentionLstm(fe_extractor=fe_extractor, fe_aggregator=fe_aggregator, mlp=mlp)
+        model = AttentionLstm(fe_extractor=fe_extractor, fe_aggregator=fe_aggregator, mlp=mlp)
         model = model.cuda()
 
         train_(model, train_loader, valid_loader)
