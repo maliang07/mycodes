@@ -52,6 +52,10 @@ if __name__ == '__main__':
     data_loader = torch.utils.data.DataLoader(test_dataset, batch_size=128, shuffle=True, \
                                               num_workers=8, pin_memory=False,drop_last=False)
 
+    # model = resnet50(num_classes=128, mlp=False, two_branch=False, normlinear=True).cuda()
+    # pretext_model = torch.load(r'./weights/best_ckpt.pth')
+    # pretrained_backbone = kwargs.get('pretrained_backbone', True)  # default to True for now, for testing
+    # model = efficientnet_b2(pretrained=pretrained_backbone, features_only=True, out_indices=[4])
     model = resnet50(num_classes=128, mlp=False, two_branch=False, normlinear=True).cuda()
     pretext_model = torch.load(r'./weights/best_ckpt.pth')
     model.fc = nn.Identity()

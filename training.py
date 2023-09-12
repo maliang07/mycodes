@@ -70,13 +70,12 @@ def train_(model, train_loader, valid_loader):
     n_epochs = 100
     warmup_epo = 1
 
-    optimizer = torch.optim.Adam([{"params": model.fe_aggregator.parameters()}, {"params": model.mlp.parameters()}], lr=init_lr / warmup_factor)
-    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs - warmup_epo)
-    scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_factor, total_epoch=warmup_epo,
-                                       after_scheduler=scheduler_cosine)
+    optimizer = torch.optim.Adam([{"params": model.fe_aggregator.parameters()}, {"params": model.mlp.parameters()}],
+                                 lr=3e-3, betas=(0.5, 0.9), weight_decay=1e-6)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs, 0.000005)
 
 
-    criterion = nn.BCEWithLogitsLoss(reduction='sum')
+    criterion = nn.BCEWithLogitsLoss()
 
     best_score = -1000
     for epoch in range(n_epochs):
@@ -89,7 +88,7 @@ def train_(model, train_loader, valid_loader):
             counter = 0
             best_score = current_score
             torch.save(model.state_dict(), os.path.join('./checkpoints',
-                                                        str(fold)+str(best_score)+'_'+str(acc)+'max_len_256_256_resize_256_20x_{}.pth'))
+                                                        str(fold)+str(best_score)+'_'+str(acc)+'max_len_512_resize_256_20x_{}.pth'))
 
         else:
                 counter += 1
@@ -115,30 +114,43 @@ class Collate:
         return out, mask, label
 
 
-my_collate_fn = Collate()
+max_leng = 128
+class Collate2:
+    def __call__(self, batch: List[dict]) -> dict:
+        label = torch.stack([sample[1] for sample in batch])
+        token = [sample[0] for sample in batch]
+        features = token[0].shape[1]
+        token_l = [len(sample[0]) for sample in batch]
+        b = len(token_l)
+        max_l = max(token_l)
+        out = torch.zeros(b, max_leng, features)
+        mask = torch.zeros(b, max_leng, 512)
 
-not_include = []
-#not_include = ['2910b44434274b848553a4ec3db11df8','f75c7cec3ddc9fbff27aca59b01c5bf5',
-#              '9d917845ea26f2d2a33790c2a755ef8e','da077ff5258dfb7cd6d604d995de7619',
-#             '3790f55cad63053e956fb73027179707','3790f55cad63053e956fb73027179707']
+        for i in range(b):
+            a = token[i]
+            if len(a) >= max_leng:
+                out[i, :, :] = a[:max_leng, :]
+            else:
+                out[i, :a.shape[0], :] = a
+            mask[i, :a.shape[0], :] = 1
+
+        return out, mask, label
+
+not_include = ['2910b44434274b848553a4ec3db11df8','f75c7cec3ddc9fbff27aca59b01c5bf5',
+              '9d917845ea26f2d2a33790c2a755ef8e','da077ff5258dfb7cd6d604d995de7619',
+              '3790f55cad63053e956fb73027179707','3790f55cad63053e956fb73027179707']
 
 if __name__ == '__main__':
     dataset = 'panda'
     folds = [1, 2, 3, 4, 5]
     filedir='./input/panda/h5'
     agg_type = 'attention_lstm'
-    embeding_l=2048
-    agg_backbone ={'attention_lstm':LSTM_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=1024, bidirectional=True, batch_first=True),
-                   'GRU_AGG':GRU_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=1024, bidirectional=True, batch_first=True),
-                   'AttentionMIL':AttentionMIL(embeding_l=embeding_l, L=500, D=128, K=1),
-                   'RNN_AGG':RNN_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=1024, bidirectional=True, batch_first=True),
-                   'MAX_AGG':MAX_AGG(),
-                   'MEAN_AGG':MEAN_AGG(),
-                   'MAX_MEAN_CAT_AGG':MAX_MEAN_CAT_AGG(),
-                   'GeM':GeM(),
-                   'vit': VisionTransformer(img_size=224, embed_dim=768, depth=8, num_heads=8, mlp_ratio=3, hybrid_backbone=backbone, **kwargs)}
+    embeding_l = 2048
 
-    my_collate_fn = Collate()
+    if agg_type in ['vit']:
+        my_collate_fn = Collate2()
+    else:
+        my_collate_fn = Collate()
 
     if dataset == "panda":
         df = pd.read_csv('./pandas.csv')
@@ -148,8 +160,8 @@ if __name__ == '__main__':
     for fold in folds:
         train_idx = np.where((df['kfold'] != fold))[0]
         valid_idx = np.where((df['kfold'] == fold))[0]
-        train_dataset = Prost_Dataset(df=df, indinces=train_idx, filedir=filedir)
-        valid_dataset = Prost_Dataset(df=df, indinces=valid_idx, filedir=filedir)
+        train_dataset = Prost_Dataset(df=df, indinces=train_idx, filedir=filedir, agg_type=agg_type)
+        valid_dataset = Prost_Dataset(df=df, indinces=valid_idx, filedir=filedir, agg_type=agg_type)
 
         train_sampler = None
         train_loader = torch.utils.data.DataLoader(
@@ -163,12 +175,36 @@ if __name__ == '__main__':
                 num_workers=8, pin_memory=False, sampler=train_sampler, drop_last=False)
 
         fe_extractor = nn.Identity()
-        fe_aggregator = agg_backbone[agg_type]#LSTM_AGG(embeding_l=2048, num_layers =2, hidden_layer=1024, bidirectional=True, batch_first=True)
-        #fe_aggregator = vit_base_efficientnet_b3(pretrained=True)
-        #fe_aggregator = swin_s3_small_224(pretrained=True)
-        if agg_type in ['GRU_AGG', 'MAX_MEAN_CAT_AGG', 'attention_lstm']:
-            embeding_l = embeding_l*2
-        mlp = MyMlp(in_features=embeding_l, hidden_features=2048, out_features=5)
+        if agg_type in ['MAX_MEAN_CAT_AGG']:
+            fe_aggregator = MAX_MEAN_CAT_AGG()
+            mlp = Mlp2(in_features=2048*2, hidden_features=512, out_features=5)
+        if agg_type in ['MAX_AGG']:
+            fe_aggregator = MAX_AGG()
+            mlp = Mlp2(in_features=2048, hidden_features=512, out_features=5)
+        if agg_type in ['MEAN_AGG']:
+            fe_aggregator = MEAN_AGG()
+            mlp = Mlp2(in_features=2048, hidden_features=512, out_features=5)
+        if agg_type in ['GeM']:
+            fe_aggregator = GeM()
+            mlp = Mlp2(in_features=2048, hidden_features=512, out_features=5)
+        if agg_type in ['AttentionMIL']:
+            fe_aggregator = AttentionMIL(embeding_l=2048, L=500, D=128, K=1)
+            mlp = Mlp2(in_features=500, hidden_features=512, out_features=5)
+        if agg_type in ['attention_lstm']:
+            fe_aggregator = LSTM_AGG(embeding_l=2048, num_layers=2, hidden_layer=512, bidirectional=True, batch_first=True)
+            mlp = Mlp2(in_features=2048 * 2, hidden_features=512, out_features=5)
+        if agg_type in ['GRU_AGG']:
+            fe_aggregator = GRU_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=512, bidirectional=True, batch_first=True)
+            mlp = Mlp2(in_features=2048 * 2, hidden_features=512, out_features=5)
+        if agg_type in ['RNN_AGG']:
+            fe_aggregator = RNN_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=512, bidirectional=True, batch_first=True)
+            mlp = Mlp2(in_features=2048 * 2, hidden_features=512, out_features=5)
+        if agg_type in ['vit']:
+            fe_aggregator = VisionTransformer(embed_dim=512, depth=6, num_heads=8)
+            mlp = Mlp2(in_features=512, hidden_features=512, out_features=5)
+        if agg_type in ['CLAM_MB']:
+            fe_aggregator = CLAM_MB()
+            mlp = Mlp2(in_features=512, hidden_features=512, out_features=5)
 
         model = AttentionLstm(fe_extractor=fe_extractor, fe_aggregator=fe_aggregator, mlp=mlp)
         model = model.cuda()

@@ -27,10 +27,11 @@ class FE_EXT_Dataset(torch.utils.data.Dataset):
 
 
 class Prost_Dataset(torch.utils.data.Dataset):
-    def __init__(self, df, indinces, filedir):
+    def __init__(self, df, indinces, filedir,agg_type):
         self.df = df
         self.indinces = indinces
         self.filedir = filedir
+        self.agg_type = agg_type
 
     def __len__(self):
         return len(self.indinces)
@@ -40,7 +41,8 @@ class Prost_Dataset(torch.utils.data.Dataset):
             tokens = f[csv_file]
             tokens = np.array(tokens)
             sample_list = [i for i in range(len(tokens))]
-            sample_list = random.sample(sample_list, len(tokens))
+            if self.agg_type=='attention_lstm':
+                sample_list = random.sample(sample_list, len(tokens))
             tokens = tokens[sample_list, :]
 
         return tokens
