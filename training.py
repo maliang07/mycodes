@@ -10,7 +10,7 @@ from sklearn.metrics import accuracy_score
 import os
 import numpy as np
 import pandas as pd
-
+from copy import deepcopy
 from models.aggregator import *
 from models.MyMlp import *
 from models.attentionLstm import *
@@ -21,7 +21,7 @@ from models.VIT import *
 from models.SwinTransformer import *
 fe_selector = FESelector()
 
-def train_epoch(train_loader, model, criterion, optimizer, usingfp16=False):
+def train_epoch(train_loader, model, criterion, optimizer, feature_selector=None):
     model.train()
     train_loader1 = tqdm(train_loader)
     loss_ret = 0
@@ -29,6 +29,8 @@ def train_epoch(train_loader, model, criterion, optimizer, usingfp16=False):
     for i, (token, mask, label) in enumerate(train_loader1):
         optimizer.zero_grad()
         label = label.to(device)
+        if feature_selector is not None:
+            token = feature_selector(token, mask, label)
         final_score = model(token, mask)
         loss_com = criterion(final_score, label)
         loss_com.backward()
@@ -39,7 +41,7 @@ def train_epoch(train_loader, model, criterion, optimizer, usingfp16=False):
     return loss_ret
 
 
-def valid_epoch(valid_loader, model, criterion):
+def valid_epoch(valid_loader, model, criterion, feature_selector=None):
     valid_loader = tqdm(valid_loader)
     model.eval()
     ALL_PREDS= []
@@ -47,6 +49,8 @@ def valid_epoch(valid_loader, model, criterion):
     for i, (token, mask, label) in enumerate(valid_loader):
         label = label.to(device)
         with torch.no_grad():
+            if feature_selector is not None:
+                token = feature_selector(token, mask, label)
             final_score = model(token, mask)
             loss_com = criterion(final_score, label)
             ALL_PREDS.append(final_score.sigmoid().sum(1).detach().round())
@@ -63,26 +67,34 @@ def valid_epoch(valid_loader, model, criterion):
     return qwk3, acc
 
 
-def train_(model, train_loader, valid_loader):
+def train_(model, train_loader, valid_loader, feature_selector=None):
+
+    #init_lr = 3e-4
+    #warmup_factor = 10
+    #n_epochs = 100
+    #warmup_epo = 1
+
+    #optimizer = torch.optim.Adam([{"params": model.fe_aggregator.parameters()}, {"params": model.mlp.parameters()}],
+    #                             lr=3e-3, betas=(0.5, 0.9), weight_decay=1e-6)
+    #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs, 0.000005)
 
     init_lr = 3e-4
     warmup_factor = 10
     n_epochs = 100
     warmup_epo = 1
-
-    optimizer = torch.optim.Adam([{"params": model.fe_aggregator.parameters()}, {"params": model.mlp.parameters()}],
-                                 lr=3e-3, betas=(0.5, 0.9), weight_decay=1e-6)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs, 0.000005)
-
+    optimizer = torch.optim.Adam(model.parameters(), lr=init_lr / warmup_factor)
+    scheduler_cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs - warmup_epo)
+    scheduler = GradualWarmupScheduler(optimizer, multiplier=warmup_factor, total_epoch=warmup_epo,
+                                       after_scheduler=scheduler_cosine)
 
     criterion = nn.BCEWithLogitsLoss()
 
     best_score = -1000
     for epoch in range(n_epochs):
-        train_loss = train_epoch(train_loader, model, criterion, optimizer)
+        train_loss = train_epoch(train_loader, model, criterion, optimizer, feature_selector)
 
         scheduler.step()
-        valid_kappa, acc = valid_epoch(valid_loader, model, criterion)
+        valid_kappa, acc = valid_epoch(valid_loader, model, criterion, feature_selector)
         current_score = valid_kappa
         if current_score > best_score:
             counter = 0
@@ -146,6 +158,9 @@ if __name__ == '__main__':
     filedir='./input/panda/h5'
     agg_type = 'attention_lstm'
     embeding_l = 2048
+    two_layer = False
+    feature_ranking=True
+    mlplayer = Mlp2 if two_layer else MyMlp
 
     if agg_type in ['vit']:
         my_collate_fn = Collate2()
@@ -177,36 +192,42 @@ if __name__ == '__main__':
         fe_extractor = nn.Identity()
         if agg_type in ['MAX_MEAN_CAT_AGG']:
             fe_aggregator = MAX_MEAN_CAT_AGG()
-            mlp = Mlp2(in_features=2048*2, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=2048*2, hidden_features=512, out_features=5)
         if agg_type in ['MAX_AGG']:
             fe_aggregator = MAX_AGG()
-            mlp = Mlp2(in_features=2048, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=2048, hidden_features=512, out_features=5)
         if agg_type in ['MEAN_AGG']:
             fe_aggregator = MEAN_AGG()
-            mlp = Mlp2(in_features=2048, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=2048, hidden_features=512, out_features=5)
         if agg_type in ['GeM']:
             fe_aggregator = GeM()
-            mlp = Mlp2(in_features=2048, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=2048, hidden_features=512, out_features=5)
         if agg_type in ['AttentionMIL']:
             fe_aggregator = AttentionMIL(embeding_l=2048, L=500, D=128, K=1)
-            mlp = Mlp2(in_features=500, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=500, hidden_features=512, out_features=5)
         if agg_type in ['attention_lstm']:
             fe_aggregator = LSTM_AGG(embeding_l=2048, num_layers=2, hidden_layer=512, bidirectional=True, batch_first=True)
-            mlp = Mlp2(in_features=2048 * 2, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=2048 * 2, hidden_features=512, out_features=5)
         if agg_type in ['GRU_AGG']:
             fe_aggregator = GRU_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=512, bidirectional=True, batch_first=True)
-            mlp = Mlp2(in_features=2048 * 2, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=2048 * 2, hidden_features=512, out_features=5)
         if agg_type in ['RNN_AGG']:
             fe_aggregator = RNN_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=512, bidirectional=True, batch_first=True)
-            mlp = Mlp2(in_features=2048 * 2, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=2048 * 2, hidden_features=512, out_features=5)
         if agg_type in ['vit']:
             fe_aggregator = VisionTransformer(embed_dim=512, depth=6, num_heads=8)
-            mlp = Mlp2(in_features=512, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=512, hidden_features=512, out_features=5)
         if agg_type in ['CLAM_MB']:
             fe_aggregator = CLAM_MB()
-            mlp = Mlp2(in_features=512, hidden_features=512, out_features=5)
+            mlp = mlplayer(in_features=512, hidden_features=512, out_features=5)
 
         model = AttentionLstm(fe_extractor=fe_extractor, fe_aggregator=fe_aggregator, mlp=mlp)
         model = model.cuda()
 
-        train_(model, train_loader, valid_loader)
+        feature_selector=None
+        if feature_ranking:
+            model2 = deepcopy(model)
+            model2.load_state_dict(torch.load('../work/attention_LSTM_{}.pth'.format(fold)), strict=True)
+            feature_selector = FESelector(model=model2, n_patch=20)
+
+        train_(model, train_loader, valid_loader, feature_selector = feature_selector)
