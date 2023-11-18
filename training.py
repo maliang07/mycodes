@@ -21,8 +21,7 @@ from dataset import Prost_Dataset
 from utils.GradualWarmupScheduler import *
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 from models.VIT import *
-from models.SwinTransformer import *
-#from models.SwinTransformer import *
+
 #fe_selector = FESelector()
 
 def train_epoch(train_loader, model, criterion, optimizer, feature_selector=None):
@@ -219,10 +218,6 @@ if __name__ == '__main__':
             mlp = mlplayer(in_features=512, hidden_features=512, out_features=5)
         if agg_type in ['CLAM_MB']:
             fe_aggregator = CLAM_MB()
-            mlp = mlplayer(in_features=512, hidden_features=512, out_features=5)
-
-        if agg_type in ['SwinTransformer']:
-            fe_aggregator = swin_s()
             mlp = mlplayer(in_features=512, hidden_features=512, out_features=5)
 
         model = AttentionLstm(fe_extractor=fe_extractor, fe_aggregator=fe_aggregator, mlp=mlp, agg_type=agg_type)
