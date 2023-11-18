@@ -50,7 +50,6 @@ def drop_path(x, drop_prob: float = 0., training: bool = False):
 class DropPath(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
     """
-
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
@@ -104,7 +103,7 @@ class Attention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        return x,attn
 
 
 class Block(nn.Module):
@@ -120,9 +119,10 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x, attn_mask=None):
-        x = x + self.drop_path(self.attn(self.norm1(x), attn_mask=attn_mask))
+        x, A = self.attn(self.norm1(x), attn_mask=attn_mask)
+        x = x + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x
+        return x, A
 
 
 class PatchEmbed(nn.Module):
@@ -198,7 +198,7 @@ class VisionTransformer(nn.Module):
     """
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., mlp_head=False, drop_rate=0., drop_path_rate=0.,
-                 flatten_channels_last=False, hybrid_backbone=None,num_patches=128):
+                 flatten_channels_last=False, hybrid_backbone=None, num_patches=128):
         super().__init__()
         if hybrid_backbone is not None:
             self.patch_embed = HybridEmbed(
@@ -209,6 +209,7 @@ class VisionTransformer(nn.Module):
                 flatten_channels_last=flatten_channels_last)
         #num_patches = self.patch_embed.num_patches
         num_patches = num_patches
+        self.embed_dim = embed_dim
         self.max_linear = nn.Linear(2048, embed_dim)
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
@@ -241,22 +242,28 @@ class VisionTransformer(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
+    def reset_patch(self, n_patch):
+        self.pos_embed = nn.Parameter(torch.zeros(1, n_patch + 1, self.embed_dim))
+
     @property
     def no_weight_decay(self):
         return {'pos_embed', 'cls_token'}
 
-    def forward(self, x, attn_mask=None):
+    def forward(self, x, attn_mask=None, label=None, return_att=True):
         B = x.shape[0]
-        #print('x',x.shape)
         x = self.max_linear(x)
 
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
         x += self.pos_embed
 
+        A = None
         for blk in self.blocks:
-            x = blk(x, attn_mask=attn_mask)
+            x, A = blk(x, attn_mask=attn_mask)
+            print('A', A.shape)
+            print('x', x.shape)
 
         x = self.norm(x[:, 0])
-        #x = self.head(x)
+        if return_att:
+            return x, A
         return x

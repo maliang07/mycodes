@@ -51,15 +51,28 @@ class LSTM_AGG(nn.Module):
         super(LSTM_AGG, self).__init__()
         self.num_layers = num_layers
         self.hidden_size = hidden_layer
-        self.attention1 = nn.Linear(2048, 1024)
+        self.attention1 = nn.Linear(2048, 512)
         self.relu = nn.ReLU()
-        self.attention2 = nn.Linear(1024, 1)
+        self.attention2 = nn.Linear(512, 1)
         self.use_attention = use_attention
         self.lstm = nn.LSTM(embeding_l, hidden_layer, num_layers=num_layers, \
                             bidirectional=bidirectional, batch_first=batch_first)
 
         self._init_weights(self.attention1)
         self._init_weights(self.attention2)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if module.bias is not None:
+                module.bias.data.zero_()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal_(mean=0.0, std=0.02)
+            if module.padding_idx is not None:
+                module.weight.data[module.padding_idx].zero_()
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
 
     def concrete_dropout_neuron(self, dropout_p, temp=1.0 / 10.0, **kwargs):
         unif_noise = Variable(dropout_p.data.new().resize_as_(dropout_p.data).uniform_())
@@ -84,7 +97,7 @@ class LSTM_AGG(nn.Module):
         bern_val = self.sampled_from_logit_p(token_out)
         bern_val = bern_val.expand_as(token_out)
         noised_input = token_out * bern_val
-        return noised_input
+        return noised_input, bern_val.mean(-1)
 
 
     def forward(self,token, mask, label=None, return_att=True):
@@ -93,6 +106,7 @@ class LSTM_AGG(nn.Module):
         c_0 = Variable(torch.zeros(self.num_layers * 2, token.size(0), self.hidden_size).to(device))
 
         h_lstm2, (h_out, _) = self.lstm(token, (h_0, c_0))
+        #print('h_lstm2',  h_lstm2.shape)
 
         if self.use_attention:
             h_lstm2, dropout_p = self.sampled_noisy_input(h_lstm2)
@@ -364,8 +378,9 @@ class CLAM_MB(nn.Module):
     def create_negative_targets(length, device):
         return torch.full((length,), 0, device=device).long()
 
-    def forward(self, h, mask=None,label=None, instance_eval=True, return_features=False, attention_only=False,return_att=True):
+    def forward(self, h, mask=None, label=None, return_att=False,instance_eval=False, return_features=False, attention_only=False):
         device = h.device
+        #print('CLAM_MB', return_att)
         A, h = self.attention_net(h)  # NxK
         A = torch.transpose(A, 2, 1)  # KxN
         if attention_only:

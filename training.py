@@ -1,8 +1,11 @@
+import os
+# os.system('pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple opencv-python')
+#os.system('pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple einops')
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-#from apex import amp
-from sklearn.metrics import f1_score,confusion_matrix
+# from apex import amp
+from sklearn.metrics import f1_score, confusion_matrix
 from torch.autograd import Variable
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import cohen_kappa_score
@@ -15,11 +18,12 @@ from models.aggregator import *
 from models.MyMlp import *
 from models.attentionLstm import *
 from dataset import Prost_Dataset
-from utils.GradualWarmupScheduler import  *
+from utils.GradualWarmupScheduler import *
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 from models.VIT import *
 from models.SwinTransformer import *
-fe_selector = FESelector()
+#from models.SwinTransformer import *
+#fe_selector = FESelector()
 
 def train_epoch(train_loader, model, criterion, optimizer, feature_selector=None):
     model.train()
@@ -27,16 +31,20 @@ def train_epoch(train_loader, model, criterion, optimizer, feature_selector=None
     loss_ret = 0
     count2 = 0
     for i, (token, mask, label) in enumerate(train_loader1):
+        print('token',token.shape)
         optimizer.zero_grad()
         label = label.to(device)
+        token = token.to(device)
+        mask = mask.to(device)
+        #print('feature_selector', feature_selector)
         if feature_selector is not None:
             token = feature_selector(token, mask, label)
-        final_score = model(token, mask)
+        final_score = model(token, mask, label)
         loss_com = criterion(final_score, label)
         loss_com.backward()
         optimizer.step()
         loss_ret += loss_com.item()
-        train_loader1.set_description('loss: {:.4}'.format(loss_ret / count2))
+        #train_loader1.set_description('loss: {:.4}'.format(loss_ret / count2))
 
     return loss_ret
 
@@ -48,10 +56,12 @@ def valid_epoch(valid_loader, model, criterion, feature_selector=None):
     TARGETS = []
     for i, (token, mask, label) in enumerate(valid_loader):
         label = label.to(device)
+        token = token.to(device)
+        mask = mask.to(device)
         with torch.no_grad():
             if feature_selector is not None:
                 token = feature_selector(token, mask, label)
-            final_score = model(token, mask)
+            final_score = model(token, mask, label)
             loss_com = criterion(final_score, label)
             ALL_PREDS.append(final_score.sigmoid().sum(1).detach().round())
             TARGETS.append(label.sum(1))
@@ -68,15 +78,6 @@ def valid_epoch(valid_loader, model, criterion, feature_selector=None):
 
 
 def train_(model, train_loader, valid_loader, feature_selector=None):
-
-    #init_lr = 3e-4
-    #warmup_factor = 10
-    #n_epochs = 100
-    #warmup_epo = 1
-
-    #optimizer = torch.optim.Adam([{"params": model.fe_aggregator.parameters()}, {"params": model.mlp.parameters()}],
-    #                             lr=3e-3, betas=(0.5, 0.9), weight_decay=1e-6)
-    #scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_epochs, 0.000005)
 
     init_lr = 3e-4
     warmup_factor = 10
@@ -99,11 +100,9 @@ def train_(model, train_loader, valid_loader, feature_selector=None):
         if current_score > best_score:
             counter = 0
             best_score = current_score
-            torch.save(model.state_dict(), os.path.join('./checkpoints',
-                                                        str(fold)+str(best_score)+'_'+str(acc)+'max_len_512_resize_256_20x_{}.pth'))
-
+            torch.save(model.state_dict(), os.path.join('./checkpoints', str(fold)+str(best_score)+'_'+str(acc)+'AttentionMIL_256_20x_{}.pth'))
         else:
-                counter += 1
+            counter += 1
 
 
 from typing import List
@@ -154,12 +153,12 @@ not_include = ['2910b44434274b848553a4ec3db11df8','f75c7cec3ddc9fbff27aca59b01c5
 
 if __name__ == '__main__':
     dataset = 'panda'
-    folds = [1, 2, 3, 4, 5]
-    filedir='./input/panda/h5'
-    agg_type = 'attention_lstm'
+    folds = [1]
+    filedir = './input/h5/panda/'
+    agg_type = 'SwinTransformer'#'attention_lstm'#'AttentionMIL'#'CLAM_MB' #''
     embeding_l = 2048
     two_layer = False
-    feature_ranking=True
+    feature_ranking = False
     mlplayer = Mlp2 if two_layer else MyMlp
 
     if agg_type in ['vit']:
@@ -168,7 +167,8 @@ if __name__ == '__main__':
         my_collate_fn = Collate()
 
     if dataset == "panda":
-        df = pd.read_csv('./pandas.csv')
+        df = pd.read_csv('./input/train_all_final.csv')
+        df = df.sample(frac=0.01)
         rr1 = df.groupby(['isup_grade']).count()
         df = df[~df.image_id.isin(not_include)].reset_index(drop=True)
 
@@ -180,14 +180,14 @@ if __name__ == '__main__':
 
         train_sampler = None
         train_loader = torch.utils.data.DataLoader(
-                train_dataset, batch_size=32, shuffle=True,
+                train_dataset, batch_size=16, shuffle=True,
                 collate_fn=my_collate_fn,
-                num_workers=8, pin_memory=False, sampler=train_sampler, drop_last=False)
+                num_workers=2, pin_memory=False, sampler=train_sampler, drop_last=False)
 
         valid_loader = torch.utils.data.DataLoader(
-                valid_dataset, batch_size=32, shuffle=False,
+                valid_dataset, batch_size=16, shuffle=False,
                 collate_fn=my_collate_fn,
-                num_workers=8, pin_memory=False, sampler=train_sampler, drop_last=False)
+                num_workers=2, pin_memory=False, sampler=train_sampler, drop_last=False)
 
         fe_extractor = nn.Identity()
         if agg_type in ['MAX_MEAN_CAT_AGG']:
@@ -206,7 +206,7 @@ if __name__ == '__main__':
             fe_aggregator = AttentionMIL(embeding_l=2048, L=500, D=128, K=1)
             mlp = mlplayer(in_features=500, hidden_features=512, out_features=5)
         if agg_type in ['attention_lstm']:
-            fe_aggregator = LSTM_AGG(embeding_l=2048, num_layers=2, hidden_layer=512, bidirectional=True, batch_first=True)
+            fe_aggregator = LSTM_AGG(embeding_l=2048, num_layers=2, hidden_layer=1024, bidirectional=True, batch_first=True)
             mlp = mlplayer(in_features=2048 * 2, hidden_features=512, out_features=5)
         if agg_type in ['GRU_AGG']:
             fe_aggregator = GRU_AGG(embeding_l=embeding_l, num_layers=2, hidden_layer=512, bidirectional=True, batch_first=True)
@@ -221,13 +221,20 @@ if __name__ == '__main__':
             fe_aggregator = CLAM_MB()
             mlp = mlplayer(in_features=512, hidden_features=512, out_features=5)
 
-        model = AttentionLstm(fe_extractor=fe_extractor, fe_aggregator=fe_aggregator, mlp=mlp)
-        model = model.cuda()
+        if agg_type in ['SwinTransformer']:
+            fe_aggregator = swin_s()
+            mlp = mlplayer(in_features=512, hidden_features=512, out_features=5)
 
-        feature_selector=None
+        model = AttentionLstm(fe_extractor=fe_extractor, fe_aggregator=fe_aggregator, mlp=mlp, agg_type=agg_type)
+        if torch.cuda.is_available():
+            model = model.cuda()
+
+        feature_selector = None
         if feature_ranking:
             model2 = deepcopy(model)
-            model2.load_state_dict(torch.load('../work/attention_LSTM_{}.pth'.format(fold)), strict=True)
-            feature_selector = FESelector(model=model2, n_patch=20)
+            model2.load_state_dict(torch.load('./weights/VIT_1.pth'.format(fold), map_location='cpu'), strict=True)
+            feature_selector = FESelector(model=model2, n_patch=20, agg_type=agg_type)
+            if agg_type in ['vit']:
+                model.fe_aggregator.reset_patch(n_patch=20)
 
-        train_(model, train_loader, valid_loader, feature_selector = feature_selector)
+        train_(model, train_loader, valid_loader, feature_selector=feature_selector)
